@@ -1668,9 +1668,6 @@ def render_results():
         st.rerun()
         return
 
-    render_header()
-    render_nav()
-
     grade, color, detail = get_grade(result["score"])
     cat_name = "Full Blended Test" if result["category"] == "BLEND" else CATEGORIES.get(result["category"], (result["category"],))[0]
 
