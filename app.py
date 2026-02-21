@@ -975,17 +975,23 @@ class QuestionBank:
              "exp": "Ball = x, Bat = x+10. 2x+10=11. x=<strong>50p</strong>"},
         ] + self._generate_more_iq()
     
-    def _generate_more_iq(self) -> List[Dict]:
+       def _generate_more_iq(self) -> List[Dict]:
         """Generate more IQ questions"""
         questions = []
         
         iq_problems = [
             ("What comes next: J, F, M, A, M, ?", "J", ["J", "A", "S", "O"], "Months: Jan, Feb, Mar, Apr, May, Jun"),
             ("If 2+3=10, 7+2=63, 6+5=66, then 8+4=?", "96", ["96", "48", "32", "72"], "Pattern: (a+b)×a = result"),
-            ("I am lighter than feather but strongest man can't hold me. What am I?", "Breath", ["Breath", "Thought", "Shadow", "Air"]),
+            ("I am lighter than feather but strongest man can't hold me. What am I?", "Breath", ["Breath", "Thought", "Shadow", "Air"], "You cannot physically hold breath"),
         ]
         
-        for i, (text, ans, opts, exp) in enumerate(iq_problems):
+        for i, problem in enumerate(iq_problems):
+            # Safely unpack with error handling
+            if len(problem) != 4:
+                continue  # Skip malformed entries
+            
+            text, ans, opts, exp = problem
+            
             questions.append({
                 "id": f"I{i+5:03d}",
                 "cat": "iq",
@@ -993,7 +999,7 @@ class QuestionBank:
                 "difficulty": "hard",
                 "text": text,
                 "opts": opts,
-                "ans": opts.index(ans),
+                "ans": opts.index(ans) if ans in opts else 0,
                 "exp": f"{exp}. Answer: <strong>{ans}</strong>"
             })
         
