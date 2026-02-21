@@ -975,7 +975,7 @@ class QuestionBank:
              "exp": "Ball = x, Bat = x+10. 2x+10=11. x=<strong>50p</strong>"},
         ] + self._generate_more_iq()
     
-       def _generate_more_iq(self) -> List[Dict]:
+    def _generate_more_iq(self) -> List[Dict]:
         """Generate more IQ questions"""
         questions = []
         
