@@ -1453,20 +1453,23 @@ def build_blended_test(n=60):
 def start_test(category: str):
     if category == "BLEND":
         questions = build_blended_test(60)
+        time_limit = 50 * 60   # 50 minutes
     else:
         pool = BANK.get(category, [])
-        n = min(len(pool), 60)
+        n = min(len(pool), 20)
         questions = random.sample(pool, n)
+        time_limit = 20 * 60   # 20 minutes
 
     st.session_state.current_test = {
         "id": datetime.now().strftime("%Y%m%d_%H%M%S"),
         "category": category,
         "questions": questions,
+        "time_limit": time_limit,
     }
     st.session_state.answers = {}
     st.session_state.flagged = set()
     st.session_state.current_q = 0
-    st.session_state.time_remaining = 50 * 60
+    st.session_state.time_remaining = time_limit
     st.session_state.test_start = time.time()
     st.session_state.page = "active_test"
     st.rerun()
@@ -1488,7 +1491,8 @@ def render_active_test():
 
     # Update timer
     elapsed = int(time.time() - st.session_state.test_start)
-    remaining = max(0, 50 * 60 - elapsed)
+    time_limit = test.get("time_limit", 50 * 60)
+    remaining = max(0, time_limit - elapsed)
     st.session_state.time_remaining = remaining
 
     if remaining <= 0:
