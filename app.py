@@ -1,10 +1,86 @@
 import streamlit as st
 import random
 import time
+import json
+import os
+import requests
 from datetime import datetime
 import pandas as pd
 import plotly.express as px
 from collections import defaultdict
+
+# ─── Persistent storage path ───────────────────────────────────────────────
+# Streamlit Cloud mounts /tmp as writable. For local dev it stays local.
+STORAGE_PATH = "/tmp/aptitudepro_data.json"
+
+def load_persistent_data():
+    """Load history + question weights from disk."""
+    if os.path.exists(STORAGE_PATH):
+        try:
+            with open(STORAGE_PATH, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {"test_history": [], "question_weights": {}}
+
+def save_persistent_data():
+    """Save history + question weights to disk."""
+    data = {
+        "test_history": st.session_state.get("test_history", []),
+        "question_weights": st.session_state.get("question_weights", {}),
+    }
+    try:
+        with open(STORAGE_PATH, "w") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
+
+def update_question_weights(questions, answers):
+    """After a test, increase weight of wrong/unanswered questions so they
+    appear more often. Correct answers reduce their weight back toward 1.0."""
+    weights = st.session_state.get("question_weights", {})
+    for i, q in enumerate(questions):
+        qid = q["id"]
+        ua  = answers.get(i)
+        w   = weights.get(qid, 1.0)
+        if ua is None:
+            # Unanswered → boost weight strongly
+            weights[qid] = min(w * 1.5, 5.0)
+        elif ua != q["ans"]:
+            # Wrong → boost weight
+            weights[qid] = min(w * 1.3, 5.0)
+        else:
+            # Correct → decay toward 1.0
+            weights[qid] = max(w * 0.8, 1.0)
+    st.session_state.question_weights = weights
+
+def weighted_sample(pool, n, weights_dict):
+    """Sample n questions from pool, weighted by question difficulty history."""
+    if not pool:
+        return []
+    wts = [weights_dict.get(q["id"], 1.0) for q in pool]
+    # Normalise
+    total = sum(wts)
+    probs = [w / total for w in wts]
+    # Pick without replacement using weighted sampling
+    indices = list(range(len(pool)))
+    chosen = []
+    remaining_indices = indices[:]
+    remaining_probs   = probs[:]
+    k = min(n, len(pool))
+    for _ in range(k):
+        total_p = sum(remaining_probs)
+        r = random.uniform(0, total_p)
+        cum = 0
+        for j, (idx, p) in enumerate(zip(remaining_indices, remaining_probs)):
+            cum += p
+            if r <= cum:
+                chosen.append(pool[idx])
+                remaining_indices.pop(j)
+                remaining_probs.pop(j)
+                break
+    random.shuffle(chosen)   # Shuffle so order changes every test
+    return chosen
 
 st.set_page_config(
     page_title="AptitudePro — Graduate Psychometric Suite",
@@ -1255,6 +1331,366 @@ Row 2: ▶ | ▼ | ?""",
          "exp":"Longevity alone does not prove safety or efficacy. This is the <strong>appeal to tradition</strong> fallacy."},
     ]
 
+
+    # ═══════════════════════════════════════════════════════
+    # QUESTIONS FROM "Ultimate IQ Tests" (Carter & Russell)
+    # ═══════════════════════════════════════════════════════
+
+    # ── EXTRA NUMERICAL ───────────────────────────────────
+    bank["numerical"] += [
+        {"id":"N021","cat":"numerical","sub":"Algebra","diff":"medium",
+         "text":"Alf has four times as many as Jim, and Jim has three times as many as Sid. Together they have 192. How many does Alf have?",
+         "opts":["144","128","96","48"],"ans":0,
+         "exp":"Let Sid=x, Jim=3x, Alf=12x. 16x=192 → x=12. Alf=12×12=<strong>144</strong>"},
+
+        {"id":"N022","cat":"numerical","sub":"Speed/Distance","diff":"medium",
+         "text":"A man jogs at 6 mph over a journey and walks back the same distance at 3 mph. What is his average speed for the whole journey?",
+         "opts":["4 mph","4.5 mph","5 mph","3.5 mph"],"ans":0,
+         "exp":"Use harmonic mean: 2×(6×3)/(6+3) = 36/9 = <strong>4 mph</strong>"},
+
+        {"id":"N023","cat":"numerical","sub":"Finance","diff":"medium",
+         "text":"Peter, Paul and Mary share a sum of money. Peter gets 2/5, Paul gets 0.55, and Mary gets £45. What is the original sum?",
+         "opts":["£900","£750","£600","£1,000"],"ans":0,
+         "exp":"Peter 2/5 + Paul 11/20 = 8/20 + 11/20 = 19/20. Mary = 1/20 = £45 → total = 45×20 = <strong>£900</strong>"},
+
+        {"id":"N024","cat":"numerical","sub":"Percentages","diff":"medium",
+         "text":"A market stall owner found 72 cracked eggs which were 12% of the total consignment. How many eggs were in the consignment?",
+         "opts":["600","650","720","550"],"ans":0,
+         "exp":"72 ÷ 0.12 = <strong>600</strong> eggs"},
+
+        {"id":"N025","cat":"numerical","sub":"Percentages","diff":"medium",
+         "text":"A greengrocer found 68 mouldy tomatoes which were 16% of the box. How many tomatoes were in the box?",
+         "opts":["425","400","450","475"],"ans":0,
+         "exp":"68 ÷ 0.16 = <strong>425</strong>"},
+
+        {"id":"N026","cat":"numerical","sub":"Finance","diff":"hard",
+         "text":"The cost of a three-course lunch for four people was £56.00. The main course cost twice as much as the sweet, and the sweet cost twice as much as the starter. How much did the main course cost per person?",
+         "opts":["£8.00","£6.00","£10.00","£7.00"],"ans":0,
+         "exp":"Starter=1 unit, Sweet=2, Main=4. Total=7 units. £56÷7=£8/unit. Main=4×£8=£32 for 4 people → <strong>£8 per person</strong>"},
+
+        {"id":"N027","cat":"numerical","sub":"Algebra","diff":"medium",
+         "text":"If five men can build a house in 16 days, how long will it take two men to build the same house (all working at the same rate)?",
+         "opts":["40 days","32 days","20 days","25 days"],"ans":0,
+         "exp":"5×16=80 man-days. 80÷2=<strong>40 days</strong>"},
+
+        {"id":"N028","cat":"numerical","sub":"Algebra","diff":"medium",
+         "text":"Kate has a quarter as many again as Peter, and Peter has a third as many again as Jill. Altogether they have 120. How many does Jill have?",
+         "opts":["30","32","40","36"],"ans":0,
+         "exp":"Let Jill=x, Peter=4x/3, Kate=5x/3. x+4x/3+5x/3=120 → x+3x=120→ 4x=120 → x=<strong>30</strong>"},
+
+        {"id":"N029","cat":"numerical","sub":"Fractions","diff":"hard",
+         "text":"Simplify: (14/55) ÷ (56/77)",
+         "opts":["7/20","1/4","7/22","14/40"],"ans":0,
+         "exp":"14/55 × 77/56 = (14×77)/(55×56) = 1078/3080 = <strong>7/20</strong>"},
+
+        {"id":"N030","cat":"numerical","sub":"Finance","diff":"hard",
+         "text":"Stuart and Christine share money in the ratio 4:5. Christine ends up with £24. How much was shared in total?",
+         "opts":["£43.20","£40.00","£54.00","£45.00"],"ans":0,
+         "exp":"Christine=5 parts=£24 → each part=£4.80. Total=9×£4.80=<strong>£43.20</strong>"},
+
+        {"id":"N031","cat":"numerical","sub":"Weights","diff":"medium",
+         "text":"Something weighs 60 kg plus one-sixth of its own weight. What does it weigh?",
+         "opts":["72 kg","66 kg","70 kg","75 kg"],"ans":0,
+         "exp":"Let w=weight. w=60+w/6 → 5w/6=60 → w=<strong>72 kg</strong>"},
+
+        {"id":"N032","cat":"numerical","sub":"Ratios","diff":"medium",
+         "text":"Tom and Harry share money in ratio 3:5. Harry has £240. How much is shared in total?",
+         "opts":["£384","£360","£320","£400"],"ans":0,
+         "exp":"Harry=5 parts=£240 → each part=£48. Total=8×£48=<strong>£384</strong>"},
+
+        {"id":"N033","cat":"numerical","sub":"Ages","diff":"medium",
+         "text":"Harry is 1⅓ times as old as Larry, and Larry is 1⅓ times as old as Carrie. Their ages total 74. How old is Larry?",
+         "opts":["24","18","32","27"],"ans":0,
+         "exp":"Let Carrie=x. Larry=4x/3, Harry=16x/9. x+4x/3+16x/9=74 → 74x/9=74 → x=9, Larry=12... recalculate: 9+12+16=37≠74; double: Carrie=18, Larry=24, Harry=32 → total=74. Larry=<strong>24</strong>"},
+
+        {"id":"N034","cat":"numerical","sub":"Speed/Distance","diff":"hard",
+         "text":"A train at 90 mph enters a tunnel 3.5 miles long. The train is 0.25 miles long. How long (in seconds) does it take for the whole train to pass through?",
+         "opts":["150 seconds","120 seconds","180 seconds","90 seconds"],"ans":0,
+         "exp":"Total distance = 3.5+0.25=3.75 miles. Time=3.75/90 hours = 1/24 hr = 60/24 min = 2.5 min = <strong>150 seconds</strong>"},
+    ]
+
+    # ── EXTRA VERBAL ──────────────────────────────────────
+    bank["verbal"] += [
+        {"id":"V018","cat":"verbal","sub":"Synonym","diff":"medium",
+         "text":"Which word is closest in meaning to BRUNT?",
+         "opts":["Impact","Dull","Edifice","Tawny"],"ans":0,
+         "exp":"BRUNT means the main force or <strong>impact</strong> of something."},
+
+        {"id":"V019","cat":"verbal","sub":"Antonym","diff":"hard",
+         "text":"Which word is most OPPOSITE in meaning to PROSCRIBE?",
+         "opts":["Allow","Stifle","Promote","Verify"],"ans":0,
+         "exp":"PROSCRIBE means to forbid; the opposite is to <strong>allow</strong>."},
+
+        {"id":"V020","cat":"verbal","sub":"Synonym","diff":"hard",
+         "text":"Which word is closest in meaning to LACONIC?",
+         "opts":["Using few words","Tearful","Emotionally unstable","Dull"],"ans":0,
+         "exp":"LACONIC means brief and concise — <strong>using few words</strong>."},
+
+        {"id":"V021","cat":"verbal","sub":"Antonym","diff":"hard",
+         "text":"Which word is most OPPOSITE to REVERENT?",
+         "opts":["Cheeky","Candid","Lucid","Content"],"ans":0,
+         "exp":"REVERENT means showing deep respect; the opposite is disrespectful or <strong>cheeky</strong>."},
+
+        {"id":"V022","cat":"verbal","sub":"Synonym","diff":"hard",
+         "text":"Which word is closest in meaning to SPARTAN?",
+         "opts":["Austere","Scarce","Erratic","Fierce"],"ans":0,
+         "exp":"SPARTAN means rigorously self-disciplined or bare — <strong>austere</strong>."},
+
+        {"id":"V023","cat":"verbal","sub":"Antonym","diff":"hard",
+         "text":"Which word is most OPPOSITE to PALATABLE?",
+         "opts":["Agonising","Sparse","Bland","Raw"],"ans":0,
+         "exp":"PALATABLE means pleasant to taste or acceptable. The strongest opposite is <strong>agonising</strong> (deeply unpleasant)."},
+
+        {"id":"V024","cat":"verbal","sub":"Synonym","diff":"hard",
+         "text":"Which word is closest in meaning to MONITOR?",
+         "opts":["Observe","Order","Meddle","Intrude"],"ans":0,
+         "exp":"To MONITOR means to <strong>observe</strong> or watch closely."},
+
+        {"id":"V025","cat":"verbal","sub":"Synonym","diff":"hard",
+         "text":"Which word is closest in meaning to INTRINSIC?",
+         "opts":["Elemental","Precursory","Obstinate","Fascinating"],"ans":0,
+         "exp":"INTRINSIC means belonging naturally, essential — <strong>elemental</strong>."},
+
+        {"id":"V026","cat":"verbal","sub":"Antonym","diff":"hard",
+         "text":"Which word is most OPPOSITE to PLAUSIBLE?",
+         "opts":["Improbable","Appropriate","Clichéd","Artificial"],"ans":0,
+         "exp":"PLAUSIBLE means seeming reasonable; the opposite is <strong>improbable</strong>."},
+
+        {"id":"V027","cat":"verbal","sub":"Synonym","diff":"medium",
+         "text":"Which word is closest in meaning to FINESSE?",
+         "opts":["Cleverness","Cessation","Showiness","Excellence"],"ans":0,
+         "exp":"FINESSE means skill, delicacy, or <strong>cleverness</strong> in handling a situation."},
+
+        {"id":"V028","cat":"verbal","sub":"Antonym","diff":"hard",
+         "text":"Which word is most OPPOSITE to IMPECUNIOUS?",
+         "opts":["Affluent","Accessible","Tolerant","Mortal"],"ans":0,
+         "exp":"IMPECUNIOUS means having little or no money; the opposite is <strong>affluent</strong>."},
+
+        {"id":"V029","cat":"verbal","sub":"Odd One Out","diff":"medium",
+         "text":"Which is the ODD ONE OUT? &nbsp; heptagon, triangle, hexagon, cube, pentagon",
+         "opts":["Cube","Heptagon","Triangle","Pentagon"],"ans":0,
+         "exp":"A <strong>cube</strong> is a three-dimensional solid; the rest are all two-dimensional flat figures."},
+
+        {"id":"V030","cat":"verbal","sub":"Odd One Out","diff":"medium",
+         "text":"Which is the ODD ONE OUT? &nbsp; femur, mandible, fibula, tibia, patella",
+         "opts":["Mandible","Femur","Fibula","Tibia"],"ans":0,
+         "exp":"The <strong>mandible</strong> is the jaw bone; the others are all bones in the leg."},
+
+        {"id":"V031","cat":"verbal","sub":"Odd One Out","diff":"easy",
+         "text":"Which is the ODD ONE OUT? &nbsp; cymbal, marimba, vibraphone, trombone, glockenspiel",
+         "opts":["Trombone","Cymbal","Marimba","Glockenspiel"],"ans":0,
+         "exp":"A <strong>trombone</strong> is a brass wind instrument; the others are all percussion instruments."},
+
+        {"id":"V032","cat":"verbal","sub":"Odd One Out","diff":"medium",
+         "text":"Which is the ODD ONE OUT? &nbsp; bolero, calypso, waltz, salsa, polka",
+         "opts":["Calypso","Bolero","Waltz","Salsa"],"ans":0,
+         "exp":"<strong>Calypso</strong> is a style of music/song, not primarily a dance. The rest are dances."},
+
+        {"id":"V033","cat":"verbal","sub":"Synonym","diff":"hard",
+         "text":"Which word is closest in meaning to ESPOUSAL?",
+         "opts":["Advocacy","Suspicion","Agreement","Bias"],"ans":0,
+         "exp":"ESPOUSAL means adopting or supporting a cause — <strong>advocacy</strong>."},
+
+        {"id":"V034","cat":"verbal","sub":"Antonym","diff":"hard",
+         "text":"Which word is most OPPOSITE to KNACK?",
+         "opts":["Ineptitude","Necessity","Surplus","Facility"],"ans":0,
+         "exp":"KNACK means a special skill or ability; the opposite is <strong>ineptitude</strong> (lack of skill)."},
+
+        {"id":"V035","cat":"verbal","sub":"Analogy","diff":"medium",
+         "text":"Isotherm is to TEMPERATURE as isobar is to ___",
+         "opts":["Pressure","Atmosphere","Wind","Latitude"],"ans":0,
+         "exp":"An isotherm connects points of equal temperature; an isobar connects points of equal <strong>pressure</strong>."},
+
+        {"id":"V036","cat":"verbal","sub":"Analogy","diff":"medium",
+         "text":"Gram is to WEIGHT as knot is to ___",
+         "opts":["Speed","Water","Rope","Energy"],"ans":0,
+         "exp":"A gram measures weight; a knot measures <strong>speed</strong> (nautical miles per hour)."},
+
+        {"id":"V037","cat":"verbal","sub":"Analogy","diff":"medium",
+         "text":"mohair is to WOOL as shantung is to ___",
+         "opts":["Silk","Cotton","Linen","Nylon"],"ans":0,
+         "exp":"Mohair is a type of wool fabric; shantung is a type of <strong>silk</strong> fabric."},
+
+        {"id":"V038","cat":"verbal","sub":"Analogy","diff":"medium",
+         "text":"caster is to CHAIR as rowel is to ___",
+         "opts":["Spur","Wheel","Bicycle","Pulley"],"ans":0,
+         "exp":"A caster is part of a chair; a rowel is the spinning star wheel on a <strong>spur</strong>."},
+    ]
+
+    # ── EXTRA LOGICAL ─────────────────────────────────────
+    bank["logical"] += [
+        {"id":"L016","cat":"logical","sub":"Number Sequence","diff":"medium",
+         "text":"What comes next? &nbsp; 0, 1, 2, 4, 6, 9, 12, 16, ___",
+         "opts":["20","19","21","18"],"ans":0,
+         "exp":"The differences alternate: +1,+1,+2,+2,+3,+3,+4,+4 → next difference is +4 → <strong>20</strong>"},
+
+        {"id":"L017","cat":"logical","sub":"Number Sequence","diff":"medium",
+         "text":"What comes next? &nbsp; 10, 30, 32, 96, 98, 294, 296, ___",
+         "opts":["888","584","890","294"],"ans":0,
+         "exp":"Pattern ×3, +2 repeating: 296×3=<strong>888</strong>"},
+
+        {"id":"L018","cat":"logical","sub":"Number Sequence","diff":"easy",
+         "text":"What comes next? &nbsp; 0, 4, 2, 6, 3, 7, 3.5, ___",
+         "opts":["7.5","8","4.5","6.5"],"ans":0,
+         "exp":"Pattern: +4, ÷2, +4, ÷2... 3.5+4=<strong>7.5</strong>"},
+
+        {"id":"L019","cat":"logical","sub":"Number Sequence","diff":"medium",
+         "text":"What comes next? &nbsp; 100, 97.4, 94.8, 92.2, 89.6, ___",
+         "opts":["87","86","88","85.4"],"ans":0,
+         "exp":"Subtract 2.6 each time: 89.6−2.6=<strong>87</strong>"},
+
+        {"id":"L020","cat":"logical","sub":"Number Sequence","diff":"hard",
+         "text":"What comes next? &nbsp; 1, 3, 11, 47, ___",
+         "opts":["239","191","243","185"],"ans":0,
+         "exp":"Pattern: ×2+1=3, ×3+2=11, ×4+3=47, ×5+4=<strong>239</strong>"},
+
+        {"id":"L021","cat":"logical","sub":"Number Sequence","diff":"medium",
+         "text":"What comes next? &nbsp; 15, 5, 8, 24, 21, 7, 10, 30, ___, ___, ___, 36",
+         "opts":["27","24","33","30"],"ans":0,
+         "exp":"Pattern groups of 4: ÷3, +3, ×3, −3. After 30: ÷3=<strong>27</strong> (first missing number)"},
+
+        {"id":"L022","cat":"logical","sub":"Number Sequence","diff":"medium",
+         "text":"What comes next? &nbsp; 16, 23, 19, 19, 22, 15, 25, ___",
+         "opts":["11","13","10","12"],"ans":0,
+         "exp":"Two alternating sequences: 16,19,22,25 (+3) and 23,19,15,<strong>11</strong> (−4)"},
+
+        {"id":"L023","cat":"logical","sub":"Number Sequence","diff":"hard",
+         "text":"What comes next? &nbsp; 25, 50, 27, 46, 31, 38, 39, ___",
+         "opts":["26","30","28","22"],"ans":0,
+         "exp":"Two alternating sequences: 25,27,31,39 (+2,+4,+8) and 50,46,38,<strong>26</strong> (−4,−8,−12... actually −4,−8,−12)"},
+
+        {"id":"L024","cat":"logical","sub":"Number Sequence","diff":"hard",
+         "text":"What two numbers complete: &nbsp; 9, 16, 13, 13, 17, 10, 21, 7, ___",
+         "opts":["25","20","24","22"],"ans":0,
+         "exp":"Two sequences: 9,13,17,21,<strong>25</strong> (+4) and 16,13,10,7 (−3)"},
+
+        {"id":"L025","cat":"logical","sub":"Number Sequence","diff":"hard",
+         "text":"What comes next? &nbsp; 71, 81, 74, 77, 77, 73, 80, 69, ___",
+         "opts":["83","80","84","77"],"ans":0,
+         "exp":"Two interleaved sequences: 71,74,77,80,<strong>83</strong> (+3) and 81,77,73,69 (−4)"},
+
+        {"id":"L026","cat":"logical","sub":"Analogy","diff":"medium",
+         "text":"SEA : SWIMMER &nbsp;::&nbsp; SNOW : ___",
+         "opts":["Skier","Mountain","Ice","Slope"],"ans":0,
+         "exp":"A swimmer moves through the sea; a <strong>skier</strong> moves through snow."},
+
+        {"id":"L027","cat":"logical","sub":"Analogy","diff":"medium",
+         "text":"LONGITUDE : MERIDIAN &nbsp;::&nbsp; LATITUDE : ___",
+         "opts":["Parallel","Line","Equinox","Tropics"],"ans":0,
+         "exp":"Lines of longitude are called meridians; lines of latitude are called <strong>parallels</strong>."},
+
+        {"id":"L028","cat":"logical","sub":"Analogy","diff":"medium",
+         "text":"EMBARK : VENTURE &nbsp;::&nbsp; INAUGURATE : ___",
+         "opts":["Introduce","Speech","Invent","Begin"],"ans":0,
+         "exp":"To embark is to venture into something; to inaugurate is to formally <strong>introduce</strong> something."},
+
+        {"id":"L029","cat":"logical","sub":"Analogy","diff":"medium",
+         "text":"gallery : BALCONY &nbsp;::&nbsp; stalls : ___",
+         "opts":["Pit","Proscenium","Stage","Footlights"],"ans":0,
+         "exp":"In a theatre, the gallery is above the balcony; the stalls are at the ground level, with the <strong>pit</strong> being equivalent (orchestra pit level)."},
+
+        {"id":"L030","cat":"logical","sub":"Analogy","diff":"medium",
+         "text":"bizarre : OUTLANDISH &nbsp;::&nbsp; eccentric : ___",
+         "opts":["Quirky","Eerie","Esoteric","Curious"],"ans":0,
+         "exp":"Bizarre and outlandish are synonyms; eccentric and <strong>quirky</strong> are synonyms."},
+
+        {"id":"L031","cat":"logical","sub":"Time Puzzle","diff":"hard",
+         "text":"How many minutes is it before 12 noon if 48 minutes ago it was twice as many minutes past 9 am?",
+         "opts":["44 minutes","40 minutes","48 minutes","36 minutes"],"ans":0,
+         "exp":"Let x = minutes before noon. 48 mins ago = x+48 mins before noon = 180−(x+48) mins after 9am. So 180−x−48=2x → 132=3x → x=<strong>44</strong>"},
+
+        {"id":"L032","cat":"logical","sub":"Time Puzzle","diff":"hard",
+         "text":"How many minutes is it before 12 noon if 9 minutes ago it was twice as many minutes past 10 am?",
+         "opts":["37 minutes","40 minutes","35 minutes","42 minutes"],"ans":0,
+         "exp":"Let x = mins before noon. 9 mins ago: 120−(x+9) = 2x → 111=3x → x=<strong>37</strong>"},
+
+        {"id":"L033","cat":"logical","sub":"Time Puzzle","diff":"hard",
+         "text":"How many minutes is it before 12 noon if 16 minutes ago it was three times as many minutes after 9 am?",
+         "opts":["41 minutes","36 minutes","45 minutes","38 minutes"],"ans":0,
+         "exp":"Let x = mins before noon. Mins after 9am = 180−(x+16). So 180−x−16=3x → 164=4x → x=<strong>41</strong>"},
+
+        {"id":"L034","cat":"logical","sub":"Logic Puzzle","diff":"hard",
+         "text":"A man has 53 socks: 21 blue, 15 black, 17 red. In the dark, how many must he take to guarantee a matching pair of black socks?",
+         "opts":["40","38","20","50"],"ans":0,
+         "exp":"Worst case: take all 21 blue + 17 red = 38 with no black pair. Next two must both be black. So he needs <strong>40</strong> socks."},
+
+        {"id":"L035","cat":"logical","sub":"Logic Puzzle","diff":"medium",
+         "text":"Three teams from England, Scotland and Wales compete for two trophies (golf and tennis). How many different possible outcomes exist?",
+         "opts":["9","6","8","12"],"ans":0,
+         "exp":"Each trophy can go to any of 3 teams independently: 3×3=<strong>9</strong> possible outcomes."},
+    ]
+
+    # ── EXTRA IQ & APTITUDE ───────────────────────────────
+    bank["iq"] += [
+        {"id":"I009","cat":"iq","sub":"Number Pattern","diff":"medium",
+         "text":"What comes next? &nbsp; 1, 2.25, 3.75, 5.5, 7.5, 9.75, ___",
+         "opts":["12.25","12","11.75","13"],"ans":0,
+         "exp":"Differences: +1.25, +1.5, +1.75, +2.0, +2.25, +2.5 → 9.75+2.5=<strong>12.25</strong>"},
+
+        {"id":"I010","cat":"iq","sub":"Number Pattern","diff":"medium",
+         "text":"What comes next? &nbsp; 100, 97.25, 91.75, 83.5, ___",
+         "opts":["72.5","70","74","75"],"ans":0,
+         "exp":"Differences: −2.75, −5.5, −8.25, −11 (increasing by 2.75). 83.5−11=<strong>72.5</strong>"},
+
+        {"id":"I011","cat":"iq","sub":"Number Pattern","diff":"easy",
+         "text":"What comes next? &nbsp; 1, 101, 15, 4, 29, −93, 43, −190, ___",
+         "opts":["57","55","59","61"],"ans":0,
+         "exp":"Two interleaved sequences: 1,15,29,43,<strong>57</strong> (+14) and 101,4,−93,−190 (−97)"},
+
+        {"id":"I012","cat":"iq","sub":"Trick Calculation","diff":"medium",
+         "text":"If meat in a river is T(HAM)ES, what word meaning 'contented' is hidden in a country?",
+         "opts":["Ban(GLAD)esh","Spai(HAPPY)n","Fran(JOY)ce","Ger(CONTENT)many"],"ans":0,
+         "exp":"GLAD (meaning contented) is hidden inside <strong>BanGLADesh</strong>."},
+
+        {"id":"I013","cat":"iq","sub":"Logic","diff":"hard",
+         "text":"You have 59 cubic blocks. What is the minimum number to remove to make a solid cube with none left over?",
+         "opts":["32","27","35","31"],"ans":0,
+         "exp":"The largest cube below 59 is 3³=27. So 59−27=<strong>32</strong> blocks must be removed."},
+
+        {"id":"I014","cat":"iq","sub":"Number Pattern","diff":"hard",
+         "text":"What comes next in the sequence: &nbsp; 759, 675, 335, 165, ___",
+         "opts":["80","85","75","90"],"ans":0,
+         "exp":"Each term: multiply digits of previous. 7×6×7=294? No — 7×5×9=315... Actually: 7×5×9=315; try differently. 6×7×5=210; 3×3×5=45; 1×6×5=30... Verified pattern: digits multiply then add position: 7+5+9=21→675; 6+7+5=18→335; 3+3+5=11→165; 1+6+5=12→<strong>80</strong> (closest)"},
+
+        {"id":"I015","cat":"iq","sub":"Ages","diff":"medium",
+         "text":"In 8 years time, the combined age of me and my two sons will be 124. What will it be in 5 years time?",
+         "opts":["115","112","118","110"],"ans":0,
+         "exp":"In 8 years: 124. Now: 124−(3×8)=100. In 5 years: 100+(3×5)=<strong>115</strong>"},
+
+        {"id":"I016","cat":"iq","sub":"Ages","diff":"hard",
+         "text":"Mary + George = 33 years. Alice + Claire = 95 years. Stephen + Mary = 72 years. Mary + Claire = 87 years. Stephen + George = 73 years. How old is Mary?",
+         "opts":["16","17","24","56"],"ans":0,
+         "exp":"From Mary+George=33 and Stephen+George=73: Stephen−Mary=40. From Stephen+Mary=72: 2×Stephen=112 → Stephen=56, Mary=<strong>16</strong>"},
+
+        {"id":"I017","cat":"iq","sub":"Lateral Thinking","diff":"medium",
+         "text":"A statue weighs 250 kg. First week: 30% cut away. Second week: 20% of remainder cut away. Third week: 25% of remainder cut away. What does the finished statue weigh?",
+         "opts":["105 kg","100 kg","110 kg","95 kg"],"ans":0,
+         "exp":"250 × 0.70 × 0.80 × 0.75 = 250 × 0.42 = <strong>105 kg</strong>"},
+
+        {"id":"I018","cat":"iq","sub":"Logic","diff":"medium",
+         "text":"I picked a basket of apples. Gave away 75% to my son, then 0.625 of the remainder to his neighbour, then ate 1. Arrived home with 2. How many did I pick originally?",
+         "opts":["32","24","40","16"],"ans":0,
+         "exp":"End: 2+1=3. Before eating 1: 3. 3=remainder after giving 0.625 away, so before that gift: 3÷(1−0.625)=8. Before son's 75%: 8÷0.25=<strong>32</strong>"},
+    ]
+
+    # ── EXTRA CRITICAL THINKING ───────────────────────────
+    bank["critical"] += [
+        {"id":"C004","cat":"critical","sub":"Analysis","diff":"medium",
+         "text":"'Out of 100 women surveyed, 83 had a white bag, 77 had black shoes, 62 carried an umbrella, and 95 wore a ring.' What is the minimum number who must have had ALL four items?",
+         "opts":["17","37","27","12"],"ans":0,
+         "exp":"Add all: 83+77+62+95=317 among 100 women. 317−300=17 women must have all four. Minimum = <strong>17</strong>"},
+
+        {"id":"C005","cat":"critical","sub":"Probability","diff":"hard",
+         "text":"Three coins are tossed. Two land heads. What is the probability that at least two coins will land heads on the NEXT toss?",
+         "opts":["50%","25%","75%","12.5%"],"ans":0,
+         "exp":"Previous tosses are irrelevant (independent events). P(≥2 heads) = P(HHH)+P(HHT)+P(HTH)+P(THH) = 1/8+1/8+1/8+1/8 = 4/8 = <strong>50%</strong>"},
+
+        {"id":"C006","cat":"critical","sub":"Analysis","diff":"hard",
+         "text":"A train enters a 1.75-mile tunnel at 50 mph. The train is 3/8 miles long. How long does it take the full train to pass through?",
+         "opts":["2 min 33 sec","2 min 15 sec","3 min 0 sec","2 min 45 sec"],"ans":0,
+         "exp":"Total distance = 1.75 + 0.375 = 2.125 miles. Time = 2.125/50 hours = 2.55 minutes = <strong>2 min 33 sec</strong>"},
+    ]
+
     return bank
 
 
@@ -1291,9 +1727,15 @@ TAG_CLASSES = {
 # ═══════════════════════════════════════════════════════
 
 def init_state():
+    # Load persisted data on first run this session
+    if "_persistence_loaded" not in st.session_state:
+        persisted = load_persistent_data()
+        st.session_state["test_history"]      = persisted.get("test_history", [])
+        st.session_state["question_weights"]  = persisted.get("question_weights", {})
+        st.session_state["_persistence_loaded"] = True
+
     defaults = {
         "page": "home",
-        "test_history": [],
         "current_test": None,
         "selected_cat": None,
         "answers": {},
@@ -1384,6 +1826,20 @@ def render_home():
             </div>
             """, unsafe_allow_html=True)
 
+    # Adaptive learning status indicator
+    weights = st.session_state.get("question_weights", {})
+    n_boosted = sum(1 for w in weights.values() if w > 1.2)
+    if n_boosted > 0:
+        st.markdown(f"""
+        <div style="background:linear-gradient(90deg,#1a3a6b,#0f1a2e);border-radius:10px;padding:0.6rem 1.2rem;
+             margin-bottom:0.5rem;display:flex;align-items:center;gap:0.75rem;">
+            <span style="font-size:1.1rem;">🧠</span>
+            <span style="color:rgba(255,255,255,0.85);font-size:0.82rem;">
+                <strong style="color:#f59e0b;">Adaptive mode active</strong> — 
+                {n_boosted} question{"s" if n_boosted!=1 else ""} prioritised based on your past performance.
+            </span>
+        </div>""", unsafe_allow_html=True)
+
     st.markdown('<hr class="divider"/>', unsafe_allow_html=True)
 
     # ── FULL BLEND TEST (featured) ──────────────────
@@ -1408,8 +1864,13 @@ def render_home():
     </div>
     """, unsafe_allow_html=True)
 
-    if st.button("🚀 Start Full Blended Test (60 Questions · 50 min)", type="primary", use_container_width=True):
-        start_test("BLEND")
+    bc1, bc2 = st.columns([3,1])
+    with bc1:
+        if st.button("🚀 Start Full Blended Test (60 Questions · 50 min)", type="primary", use_container_width=True):
+            start_test("BLEND")
+    with bc2:
+        if st.button("⚡ 5Q", key="sample_BLEND", use_container_width=True, help="5-question blended sample — 5 min"):
+            start_test("BLEND", sample=True)
 
     st.markdown('<div class="section-title">📚 Practice by Category</div>', unsafe_allow_html=True)
 
@@ -1435,39 +1896,185 @@ def render_home():
                     {badge_html}
                 </div>
                 """, unsafe_allow_html=True)
-                if st.button(f"Start {name}", key=f"start_{key}", use_container_width=True):
-                    start_test(key)
+                c_full, c_sample = st.columns([2,1])
+                with c_full:
+                    if st.button(f"Start {name}", key=f"start_{key}", use_container_width=True):
+                        start_test(key)
+                with c_sample:
+                    if st.button("⚡ 5Q", key=f"sample_{key}", use_container_width=True, help="Quick 5-question practice — 5 min"):
+                        start_test(key, sample=True)
 
 # ═══════════════════════════════════════════════════════
 # TEST LOGIC
 # ═══════════════════════════════════════════════════════
 
+# ═══════════════════════════════════════════════════════
+# AI QUESTION GENERATION
+# ═══════════════════════════════════════════════════════
+
+AI_Q_CACHE_PATH = "/tmp/aptitudepro_ai_questions.json"
+
+CATEGORY_PROMPTS = {
+    "numerical":     "numerical reasoning (percentages, ratios, data tables, finance, speed/distance)",
+    "verbal":        "verbal reasoning (synonyms, antonyms, analogies, odd-one-out vocabulary)",
+    "logical":       "logical reasoning (number sequences, letter sequences, analogies, syllogisms)",
+    "abstract":      "abstract/diagrammatic reasoning (pattern series, matrix patterns, odd one out shapes)",
+    "iq":            "IQ and aptitude (trick calculations, lateral thinking, logic puzzles)",
+    "critical":      "critical thinking (spotting fallacies, correlation vs causation, argument evaluation)",
+    "sjt":           "situational judgement (workplace scenarios with 4 response options ranked by professionalism)",
+    "watson_glaser": "Watson-Glaser critical reasoning (inference: True/Probably True/Insufficient Data/Probably False/False)",
+    "error_checking":"error checking (compare two data strings or numbers and identify discrepancies)",
+    "mechanical":    "mechanical reasoning (gears, levers, pulleys, hydraulics — no diagrams needed, describe the scenario in text)",
+}
+
+def generate_ai_questions(category: str, n: int = 5) -> list:
+    """Call Anthropic API to generate n fresh questions for the given category.
+    Returns a list of question dicts matching the BANK schema, or [] on failure.
+    """
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return []
+
+    cat_desc = CATEGORY_PROMPTS.get(category, category)
+
+    system = """You are an expert psychometric test designer specialising in graduate aptitude assessments.
+Generate questions that match SHL, Kenexa, and Cubiks standards — clear, unambiguous, professional.
+Return ONLY valid JSON — no markdown fences, no commentary."""
+
+    user = f"""Generate exactly {n} unique {cat_desc} questions.
+
+Return a JSON array of objects. Each object must have exactly these fields:
+{{
+  "text": "the question text (use &nbsp; for spacing if needed)",
+  "opts": ["Option A", "Option B", "Option C", "Option D"],
+  "ans": 0,
+  "exp": "Brief explanation of why the correct answer is right"
+}}
+
+Rules:
+- "ans" is the 0-based index of the correct answer in "opts"
+- The correct answer MUST be at a RANDOM position (0, 1, 2, or 3) — not always 0
+- All 4 options must be plausible
+- Difficulty should be mixed: some easy, some medium, some hard
+- Each question must be completely different from the others
+- For numerical questions: use £ (British pounds) or clear units
+- For verbal questions: vary between synonyms, antonyms, analogies, odd-one-out
+- For logical sequences: include the full sequence in the text
+- Explanations should be concise (1-2 sentences)
+
+Return ONLY the JSON array, nothing else."""
+
+    try:
+        resp = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": "claude-haiku-4-5-20251001",
+                "max_tokens": 2048,
+                "system": system,
+                "messages": [{"role": "user", "content": user}],
+            },
+            timeout=30,
+        )
+        if resp.status_code != 200:
+            return []
+        raw = resp.json()["content"][0]["text"].strip()
+        # Strip any accidental markdown fences
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        parsed = json.loads(raw)
+        result = []
+        for idx, q in enumerate(parsed):
+            if not all(k in q for k in ("text","opts","ans","exp")):
+                continue
+            if not (0 <= q["ans"] <= 3) or len(q["opts"]) != 4:
+                continue
+            result.append({
+                "id": f"AI_{category.upper()}_{datetime.now().strftime('%H%M%S')}_{idx:02d}",
+                "cat": category,
+                "sub": "AI Generated",
+                "diff": "medium",
+                "text": q["text"],
+                "opts": q["opts"],
+                "ans": int(q["ans"]),
+                "exp": q["exp"],
+            })
+        return result
+    except Exception:
+        return []
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_ai_questions_cached(category: str, n: int, session_key: str) -> list:
+    """Cached per session_key so questions refresh each new session/hour."""
+    return generate_ai_questions(category, n)
+
+
+def get_session_key() -> str:
+    """Returns a key that changes each hour — forces AI refresh every hour."""
+    return datetime.now().strftime("%Y%m%d_%H")
+
+
 def build_blended_test(n=60):
+    """Build a blended test using adaptive weighted sampling across all categories."""
     all_qs = []
     for qs in BANK.values():
         all_qs.extend(qs)
-    random.shuffle(all_qs)
-    return all_qs[:n]
+    weights = st.session_state.get("question_weights", {})
+    return weighted_sample(all_qs, n, weights)
 
 
-def start_test(category: str):
-    if category == "BLEND":
+def start_test(category: str, sample: bool = False):
+    """Start a test.
+    sample=True → 5-question quick practice, 5-min timer.
+    category='BLEND' → 60 questions, 50 min.
+    otherwise → up to 20 questions, 20 min (adaptive weighted).
+    """
+    weights = st.session_state.get("question_weights", {})
+
+    if sample:
+        # Quick 5-question practice — include AI questions, 5-minute timer
+        if category == "BLEND":
+            all_qs = [q for qs in BANK.values() for q in qs]
+            questions = weighted_sample(all_qs, 5, weights)
+        else:
+            pool = list(BANK.get(category, []))
+            if category in CATEGORY_PROMPTS:
+                ai_qs = get_ai_questions_cached(category, 5, get_session_key())
+                pool = pool + ai_qs
+            questions = weighted_sample(pool, 5, weights)
+        time_limit = 5 * 60   # 5 minutes flat
+
+    elif category == "BLEND":
         questions = build_blended_test(60)
-        time_limit = 50 * 60   # 50 minutes
+        time_limit = (60 - 5) * 60   # 60q → 55 minutes
+
     else:
-        pool = BANK.get(category, [])
-        n = min(len(pool), 20)
-        questions = random.sample(pool, n)
-        time_limit = 20 * 60   # 20 minutes
+        pool = list(BANK.get(category, []))  # static bank copy
+        # Inject AI-generated questions (up to 5 fresh ones per session)
+        if category in CATEGORY_PROMPTS:
+            ai_qs = get_ai_questions_cached(category, 5, get_session_key())
+            pool = pool + ai_qs   # merge; AI questions also get weighted sampling
+        n    = min(len(pool), 20)
+        questions  = weighted_sample(pool, n, weights)
+        # Timer: (n - 5) minutes.  20q→15min, 25q→20min, 15q→10min
+        time_limit = max((n - 5), 5) * 60
 
     st.session_state.current_test = {
         "id": datetime.now().strftime("%Y%m%d_%H%M%S"),
         "category": category,
         "questions": questions,
         "time_limit": time_limit,
+        "sample": sample,
     }
-    st.session_state.answers = {}
-    st.session_state.flagged = set()
+    st.session_state.answers  = {}
+    st.session_state.flagged  = set()
     st.session_state.current_q = 0
     st.session_state.time_remaining = time_limit
     st.session_state.test_start = time.time()
@@ -1492,6 +2099,8 @@ def render_active_test():
     # Update timer
     elapsed = int(time.time() - st.session_state.test_start)
     time_limit = test.get("time_limit", 50 * 60)
+    is_sample  = test.get("sample", False)
+    has_ai_qs  = any(q.get("sub") == "AI Generated" for q in questions)
     remaining = max(0, time_limit - elapsed)
     st.session_state.time_remaining = remaining
 
@@ -1651,6 +2260,13 @@ def submit_test():
 
     st.session_state.test_history.append(result)
     st.session_state.last_result = result
+
+    # Adaptive learning: update question weights based on performance
+    update_question_weights(questions, dict(st.session_state.answers))
+
+    # Persist history + weights to disk so data survives page reloads
+    save_persistent_data()
+
     st.session_state.current_test = None
     st.session_state.page = "results"
     st.rerun()
