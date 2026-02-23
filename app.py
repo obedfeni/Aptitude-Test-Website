@@ -2930,7 +2930,7 @@ def start_test(category: str, sample: bool = False):
             questions = weighted_sample(all_qs, 5, weights)
         else:
             pool = list(BANK.get(category, []))
-            if category in CATEGORY_PROMPTS:
+            if category in PLATFORM_STYLES:
                 ai_qs = get_ai_questions_cached(category, 5, get_session_key())
                 pool = pool + ai_qs
             questions = weighted_sample(pool, 5, weights)
@@ -2943,7 +2943,7 @@ def start_test(category: str, sample: bool = False):
     else:
         pool = list(BANK.get(category, []))  # static bank copy
         # Inject AI-generated questions (up to 5 fresh ones per session)
-        if category in CATEGORY_PROMPTS:
+        if category in PLATFORM_STYLES:
             ai_qs = get_ai_questions_cached(category, 5, get_session_key())
             pool = pool + ai_qs   # merge; AI questions also get weighted sampling
         n    = min(len(pool), 20)
